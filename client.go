@@ -13,23 +13,17 @@ import (
 	"golang.org/x/time/rate"
 )
 
+type APIResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
 type Config struct {
 	BaseURL     string
 	APIKey      string
 	AuthEnabled bool
 	RateLimiter *rate.Limiter
-
-	MaxRetries int
-}
-
-func shouldRetry(statusCode int) bool {
-	return statusCode == 429 || statusCode == 502 || statusCode == 503 || statusCode == 504
-}
-func isRetryableNetworkError(err error) bool {
-	if netErr, ok := err.(net.Error); ok {
-		return netErr.Temporary() || netErr.Timeout()
-	}
-	return false
+	MaxRetries  int
 }
 
 type myClient struct {
@@ -92,6 +86,24 @@ func newClient(baseURL string, auth bool) (*myClient, error) {
 	}, nil
 }
 
+func shouldRetry(statusCode int) bool {
+	return statusCode == 429 ||
+		statusCode == 502 ||
+		statusCode == 503 ||
+		statusCode == 504
+}
+
+func isRetryableNetworkError(err error) bool {
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+	return false
+}
+
+func cloneRequest(req *http.Request) *http.Request {
+	return req.Clone(req.Context())
+}
+
 func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 	var lastErr error
 
@@ -109,12 +121,20 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 
 	maxAttempts := c.cfg.MaxRetries + 1
 
+	retryAllowed := req.Method == http.MethodGet || req.Method == http.MethodHead
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		resp, err := c.c.Do(req)
+		reqCopy := cloneRequest(req)
+
+		resp, err := c.c.Do(reqCopy)
 
 		if err == nil {
 			if resp.StatusCode < 400 {
 				return resp, nil
+			}
+
+			if !retryAllowed {
+				return resp, fmt.Errorf("http error: %d %s", resp.StatusCode, resp.Status)
 			}
 
 			if attempt < maxAttempts-1 && shouldRetry(resp.StatusCode) {
@@ -135,6 +155,10 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 
 		lastErr = err
 
+		if !retryAllowed {
+			break
+		}
+
 		if attempt < maxAttempts-1 && isRetryableNetworkError(err) {
 			backoff := time.Second * time.Duration(1<<attempt)
 
@@ -149,11 +173,7 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 		break
 	}
 
-	return nil, fmt.Errorf(
-		"request failed after %d attempts: %w",
-		maxAttempts,
-		lastErr,
-	)
+	return nil, fmt.Errorf("request failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 func (c *myClient) Get(ctx context.Context, path string) (*http.Response, error) {
