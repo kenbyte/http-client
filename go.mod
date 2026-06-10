@@ -1,4 +1,4 @@
-module http-client
+module Anzar
 
 go 1.25.0
 

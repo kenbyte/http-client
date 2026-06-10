@@ -1,110 +1,48 @@
-package main
+package Anzar
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/time/rate"
 )
 
-type APIResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-}
-
-type Config struct {
-	BaseURL     string
-	APIKey      string
-	AuthEnabled bool
-	RateLimiter *rate.Limiter
-	MaxRetries  int
-}
-
-type myClient struct {
+type Client struct {
 	c      *http.Client
 	t      *http.Transport
 	cfg    Config
 	wsConn *websocket.Conn
 }
 
-func setupTransport() *http.Transport {
-	return &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     10,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
-		DisableKeepAlives:   false,
-	}
-}
-
-func setupClient(t *http.Transport) *http.Client {
-	return &http.Client{
-		Transport: t,
-		Timeout:   30 * time.Second,
-	}
-}
-
-func setupConfig(baseURL string, auth bool, r *rate.Limiter) (*Config, error) {
-	cfg := &Config{
-		BaseURL:     baseURL,
-		AuthEnabled: auth,
-		RateLimiter: r,
-		MaxRetries:  5,
-	}
-
-	if auth {
-		api := os.Getenv("APIKEY")
-		if api == "" {
-			return nil, fmt.Errorf("APIKEY required but not set")
-		}
-		cfg.APIKey = api
-	}
-
-	return cfg, nil
-}
-
-func newClient(baseURL string, auth bool) (*myClient, error) {
+func NewClient(baseURL string, auth bool) (*Client, error) {
 	t := setupTransport()
-	r := rate.NewLimiter(rate.Every(time.Second), 5)
 
-	cfg, err := setupConfig(baseURL, auth, r)
+	r := rate.NewLimiter(
+		rate.Every(time.Second),
+		5,
+	)
+
+	cfg, err := setupConfig(
+		baseURL,
+		auth,
+		r,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	return &myClient{
+	return &Client{
 		c:   setupClient(t),
 		t:   t,
 		cfg: *cfg,
 	}, nil
 }
 
-func shouldRetry(statusCode int) bool {
-	return statusCode == 429 ||
-		statusCode == 502 ||
-		statusCode == 503 ||
-		statusCode == 504
-}
-
-func isRetryableNetworkError(err error) bool {
-	if netErr, ok := err.(net.Error); ok {
-		return netErr.Timeout() || netErr.Temporary()
-	}
-	return false
-}
-
-func cloneRequest(req *http.Request) *http.Request {
-	return req.Clone(req.Context())
-}
-
-func (c *myClient) Do(req *http.Request) (*http.Response, error) {
+func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	var lastErr error
 
 	if c.cfg.RateLimiter != nil {
@@ -114,14 +52,22 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	if c.cfg.AuthEnabled {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		req.Header.Set(
+			"Authorization",
+			"Bearer "+c.cfg.APIKey,
+		)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(
+		"Content-Type",
+		"application/json",
+	)
 
 	maxAttempts := c.cfg.MaxRetries + 1
 
-	retryAllowed := req.Method == http.MethodGet || req.Method == http.MethodHead
+	retryAllowed :=
+		req.Method == http.MethodGet ||
+			req.Method == http.MethodHead
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		reqCopy := cloneRequest(req)
@@ -134,13 +80,20 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 			}
 
 			if !retryAllowed {
-				return resp, fmt.Errorf("http error: %d %s", resp.StatusCode, resp.Status)
+				return resp, fmt.Errorf(
+					"http error: %d %s",
+					resp.StatusCode,
+					resp.Status,
+				)
 			}
 
-			if attempt < maxAttempts-1 && shouldRetry(resp.StatusCode) {
+			if attempt < maxAttempts-1 &&
+				shouldRetry(resp.StatusCode) {
 				resp.Body.Close()
 
-				backoff := time.Second * time.Duration(1<<attempt)
+				backoff :=
+					time.Second *
+						time.Duration(1<<attempt)
 
 				select {
 				case <-time.After(backoff):
@@ -150,7 +103,11 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 				}
 			}
 
-			return resp, fmt.Errorf("http error: %d %s", resp.StatusCode, resp.Status)
+			return resp, fmt.Errorf(
+				"http error: %d %s",
+				resp.StatusCode,
+				resp.Status,
+			)
 		}
 
 		lastErr = err
@@ -159,8 +116,11 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 			break
 		}
 
-		if attempt < maxAttempts-1 && isRetryableNetworkError(err) {
-			backoff := time.Second * time.Duration(1<<attempt)
+		if attempt < maxAttempts-1 &&
+			isRetryableNetworkError(err) {
+			backoff :=
+				time.Second *
+					time.Duration(1<<attempt)
 
 			select {
 			case <-time.After(backoff):
@@ -173,21 +133,44 @@ func (c *myClient) Do(req *http.Request) (*http.Response, error) {
 		break
 	}
 
-	return nil, fmt.Errorf("request failed after %d attempts: %w", maxAttempts, lastErr)
+	return nil, fmt.Errorf(
+		"request failed after %d attempts: %w",
+		maxAttempts,
+		lastErr,
+	)
 }
 
-func (c *myClient) Get(ctx context.Context, path string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.BaseURL+path, nil)
+func (c *Client) Get(
+	ctx context.Context,
+	path string,
+) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		c.cfg.BaseURL+path,
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
+
 	return c.Do(req)
 }
 
-func (c *myClient) Post(ctx context.Context, path string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.BaseURL+path, body)
+func (c *Client) Post(
+	ctx context.Context,
+	path string,
+	body io.Reader,
+) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		c.cfg.BaseURL+path,
+		body,
+	)
 	if err != nil {
 		return nil, err
 	}
+
 	return c.Do(req)
 }
