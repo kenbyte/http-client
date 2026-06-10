@@ -3,10 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"time"
-	_ "time"
 )
 
 type myServer struct {
@@ -14,35 +13,57 @@ type myServer struct {
 }
 
 func main() {
-	var s myServer
-	s.port = ":8888"
+	s := myServer{
+		port: ":8888",
+	}
+
+	done := make(chan struct{})
+
+	// Start server
 	go func() {
 		mux := http.NewServeMux()
 
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Printf("%s %s  ", r.Method, r.Header["Accept-Encoding"])
+			fmt.Printf("%s %v\n", r.Method, r.Header["Accept-Encoding"])
 			w.Write([]byte("Hello"))
+		})
+
+		mux.HandleFunc("/message", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"message":"hello!"}`))
 		})
 
 		server := &http.Server{
 			Addr:    s.port,
 			Handler: mux,
 		}
+
 		if err := server.ListenAndServe(); err != nil {
 			if !errors.Is(err, http.ErrServerClosed) {
-				fmt.Printf("error running http server: %s\n", err)
+				log.Fatal(err)
 			}
 		}
 	}()
-	time.Sleep(200 * time.Millisecond)
+
+	// Client
 	go func() {
-		url := "http://localhost" + s.port
-		requestUrl, err := http.Get(url)
+		url := fmt.Sprintf("http://localhost%s/message", s.port)
+
+		resp, err := http.Get(url)
 		if err != nil {
-			log.Fatal("cant get the request")
+			log.Fatal(err)
 		}
-		defer requestUrl.Body.Close()
-		fmt.Printf("%d\n", requestUrl.StatusCode)
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Println(string(body))
+
+		close(done)
 	}()
-	time.Sleep(200 * time.Millisecond)
+
+	<-done
 }
