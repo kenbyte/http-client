@@ -1,5 +1,4 @@
-module Anzar
-
+module github.com/kenbyte/Anzar
 go 1.25.0
 
 require (
